@@ -1,0 +1,13 @@
+# Core
+paddleocr>=2.3.0
+numpy>=1.22
+Pillow>=9.0
+mss>=9.0
+opencv-python>=4.7
+screeninfo>=0.8
+
+# Local LLM
+llama-cpp-python>=0.2.5   # Windows wheel
+
+# Packaging (optional)
+pyinstaller>=6.0

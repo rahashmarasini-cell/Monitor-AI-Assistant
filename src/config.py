@@ -6,10 +6,10 @@ from pathlib import Path
 # USER SETTINGS – adjust to your hardware
 # -------------------------------------------------
 # Index of the monitor you want to capture from (0‑based)
-CAPTURE_MONITOR_INDEX = 1
+CAPTURE_MONITOR_INDEX = 0
 
 # Index of the monitor where the answer window will appear
-ANSWER_MONITOR_INDEX = 2
+ANSWER_MONITOR_INDEX = 1
 
 # Capture interval in seconds
 CAPTURE_INTERVAL = 2.0
