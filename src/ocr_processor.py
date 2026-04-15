@@ -65,15 +65,22 @@ def extract_text_from_image(image_path: Path = TEMP_SCREENSHOT_PATH) -> str:
     processed = enhance_for_ocr(image_path)
 
     # PaddleOCR expects a file path or a numpy array (BGR)
+    # result is a list of pages, each page is a list of regions
+    # each region is [[bbox_coords...], (text, confidence)]
     result = ocr_engine.ocr(processed, cls=True)
 
-    # ``result`` is a list of [[bbox], (text, confidence)] entries.
     lines = []
-    for line in result:
-        # line[1][0] is the recognized string
-        txt = line[1][0].strip()
-        if txt:  # ignore empty strings
-            lines.append(txt)
+    # result is a list of pages
+    if result:
+        for page in result:
+            # Each page is a list of regions
+            for region in page:
+                # Each region is [bbox, (text, confidence)]
+                if len(region) >= 2:
+                    text_confidence = region[1]  # (text, confidence)
+                    txt = text_confidence[0].strip() if isinstance(text_confidence, (tuple, list)) else str(text_confidence).strip()
+                    if txt:  # ignore empty strings
+                        lines.append(txt)
 
     # Clean up whitespace, collapse multiple spaces
     cleaned = "\n".join(lines)

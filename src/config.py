@@ -15,6 +15,21 @@ ANSWER_MONITOR_INDEX = 1
 CAPTURE_INTERVAL = 2.0
 
 # -------------------------------------------------
+# PROMPT TEMPLATE FOR LLM
+# -------------------------------------------------
+# The template is used in ai_processor.py to build the full prompt
+# {extracted_text} will be replaced with OCR-extracted text from the screen
+PROMPT_TEMPLATE = """You are a helpful assistant. Below is text extracted from a screen capture.
+If the text contains a question, answer it clearly and concisely.
+If it contains information to analyze or summarize, do that instead.
+Keep your response focused and under 500 words.
+
+Screen text:
+{extracted_text}
+
+Answer:"""
+
+# -------------------------------------------------
 # LOCAL LLM SETTINGS (no OpenAI API)
 # -------------------------------------------------
 # Path to a GGML‑quantised model (e.g. Mistral‑7B‑Instruct Q4_0)
