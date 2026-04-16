@@ -30,12 +30,13 @@ class LocalLLM:
         if platform.system() != "Windows":
             raise RuntimeError("Local LLM wrapper is currently targeted at Windows only.")
 
-        model_path = Path(LOCAL_MODEL_PATH).expanduser().resolve()
-        if not model_path.is_file():
+        if not LOCAL_MODEL_PATH.exists():
             raise FileNotFoundError(
-                f"GGML model not found at {model_path!s}. "
-                "Download a quantised model and set LOCAL_MODEL_PATH accordingly."
+                f"Model file not found at {LOCAL_MODEL_PATH}. "
+                "Please download the model and place it in the correct directory."
             )
+
+        model_path = Path(LOCAL_MODEL_PATH).expanduser().resolve()
 
         try:
             # Import is inside the try so that the error message is clearer for users.

@@ -16,7 +16,7 @@ from .screen_capture import capture_screen
 from .ocr_processor import extract_text_from_image
 from .ai_processor import query_llm
 from .answer_window import AnswerWindow
-from .config import CAPTURE_INTERVAL
+from .config import CAPTURE_INTERVAL, DATA_DIR, LOCAL_MODEL_PATH
 
 def _worker_loop(stop_event: threading.Event, answer_win: AnswerWindow) -> None:
     """Background loop – capture → OCR → LLM → update UI."""
@@ -52,6 +52,10 @@ def main() -> None:
     Initialise the UI, start the background worker, and run the Tkinter
     main‑loop. When the window is closed we signal the thread to exit cleanly.
     """
+    # Ensure required directories exist
+    DATA_DIR.mkdir(exist_ok=True)
+    LOCAL_MODEL_PATH.parent.mkdir(exist_ok=True)
+
     # UI lives in the *main* thread.
     answer_win = AnswerWindow()
 

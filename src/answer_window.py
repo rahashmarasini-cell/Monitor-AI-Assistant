@@ -48,12 +48,16 @@ class AnswerWindow:
     def show_answer(self, answer: str):
         """
         Replace current content with the new answer (clears previous).
+        Thread-safe update using after() to schedule on the main Tk thread.
         """
-        self.text.configure(state=tk.NORMAL)
-        self.text.delete(1.0, tk.END)
-        self.text.insert(tk.END, answer)
-        self.text.configure(state=tk.DISABLED)
-        self.text.see(tk.END)   # scroll to bottom
+        def update_text():
+            self.text.configure(state=tk.NORMAL)
+            self.text.delete(1.0, tk.END)
+            self.text.insert(tk.END, answer)
+            self.text.configure(state=tk.DISABLED)
+            self.text.see(tk.END)
+        
+        self.root.after(0, update_text)
 
     # -------------------------------------------------
     def start(self):
