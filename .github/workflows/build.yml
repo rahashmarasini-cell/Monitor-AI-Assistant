@@ -1,0 +1,119 @@
+name: Build Monitor-AI Executable
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Build with debug symbols'
+        required: false
+        default: 'false'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Verify model file
+      run: |
+        if (-not (Test-Path "models/mistral-7b-instruct.Q4_0.ggmlv3.bin")) {
+          Write-Error "Model file not found"
+          exit 1
+        }
+      shell: powershell
+    
+    - name: Run tests
+      run: |
+        # Add your test commands here
+        echo "Running tests..."
+        # python -m pytest tests/
+      continue-on-error: true
+    
+    - name: Build with PyInstaller (Debug)
+      if: github.event.inputs.debug == 'true'
+      run: |
+        .\build.ps1 -clean -debug
+      shell: powershell
+    
+    - name: Build with PyInstaller (Release)
+      if: github.event.inputs.debug != 'true'
+      run: |
+        .\build.ps1 -clean
+      shell: powershell
+    
+    - name: Get executable info
+      run: |
+        $exe = Get-Item "dist/MonitorAI.exe"
+        $size = [math]::Round($exe.Length / 1MB, 2)
+        echo "::notice title=Build Output::MonitorAI.exe - ${size} MB"
+      shell: powershell
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: MonitorAI-${{ matrix.python-version }}-${{ runner.os }}
+        path: dist/MonitorAI.exe
+        retention-days: 30
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/MonitorAI.exe
+        draft: false
+        prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'beta') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build Summary
+      run: |
+        echo "Build Summary"
+        echo "============="
+        echo "Python: ${{ matrix.python-version }}"
+        echo "Status: Success"
+        if (Test-Path "dist/MonitorAI.exe") {
+          $exe = Get-Item "dist/MonitorAI.exe"
+          $size = [math]::Round($exe.Length / 1MB, 2)
+          echo "Output: dist/MonitorAI.exe (${size} MB)"
+        }
+      shell: powershell
+
+  scan:
+    runs-on: windows-latest
+    needs: build
+    if: always()
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run security scan
+      run: |
+        # Optional: Add security scanning
+        # Example: pip install bandit && bandit -r src/
+        echo "Security scan placeholder"
+    
+    - name: Upload to artifact store
+      if: success()
+      run: |
+        echo "Ready for distribution"
