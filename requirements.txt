@@ -1,0 +1,6 @@
+PaddleOCR
+openai
+numpy
+Pillow
+tkinter
+threading

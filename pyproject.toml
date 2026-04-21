@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "monitor-ai-assistant"
+version = "0.1.0"
+description = "A tool that captures information from one monitor, solves problems or questions, and displays the answers on a second monitor."
+authors = ["Your Name <youremail@example.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+paddleocr = "^2.3.0"
+openai = "^0.27.0"  # or any other AI library you choose
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
