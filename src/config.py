@@ -6,10 +6,10 @@ from pathlib import Path
 # USER SETTINGS – adjust to your hardware
 # -------------------------------------------------
 # Index of the monitor you want to capture from (0‑based)
-CAPTURE_MONITOR_INDEX = 1
+CAPTURE_MONITOR_INDEX = 0
 
 # Index of the monitor where the answer window will appear
-ANSWER_MONITOR_INDEX = 2
+ANSWER_MONITOR_INDEX = 1
 
 # Capture interval in seconds
 CAPTURE_INTERVAL = 2.0
@@ -34,7 +34,7 @@ Answer:"""
 # -------------------------------------------------
 # Path to a GGML‑quantised model (e.g. Mistral‑7B‑Instruct Q4_0)
 # You can set the env var LOCAL_MODEL_PATH or edit the default below.
-DEFAULT_MODEL_PATH = Path(__file__).parent.parent / "models" / "mistral-7b-instruct.Q4_0.ggmlv3.bin"
+DEFAULT_MODEL_PATH = Path(__file__).parent.parent / "MONITOR-AI-ASSISTANT" / "models" / "mistral-7b-instruct-v0.1.Q4_0.gguf"
 LOCAL_MODEL_PATH = Path(os.getenv("LOCAL_MODEL_PATH", DEFAULT_MODEL_PATH))
 
 # Inference parameters – feel free to tweak

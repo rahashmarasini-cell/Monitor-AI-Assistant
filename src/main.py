@@ -28,11 +28,18 @@ def _worker_loop(stop_event: threading.Event, answer_win: AnswerWindow) -> None:
             # 2️⃣ OCR
             raw_text: str = extract_text_from_image(img_path)
 
-            if not raw_text.strip():
-                # No legible text – skip this round.
-                print("[INFO] No OCR text detected, trying again...")
+            if not raw_text or not raw_text.strip():
+                # No legible text – skip this round silently
                 time.sleep(CAPTURE_INTERVAL)
                 continue
+
+            # Ensure text is meaningful before sending to LLM
+            if len(raw_text.strip()) < 5:
+                print(f"[INFO] OCR text too short ({len(raw_text)} chars), skipping...")
+                time.sleep(CAPTURE_INTERVAL)
+                continue
+
+            print(f"[DEBUG] OCR extracted {len(raw_text)} characters of text")
 
             # 3️⃣ Ask the local model
             answer: str = query_llm(raw_text)

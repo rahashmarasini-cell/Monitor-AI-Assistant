@@ -1,6 +1,8 @@
-PaddleOCR
+pytesseract
 openai
 numpy
 Pillow
-tkinter
-threading
+mss
+screeninfo
+opencv-python
+llama-cpp-python
