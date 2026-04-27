@@ -1,7 +1,15 @@
-# ---- UPDATED FILE: src/ocr_processor.py ----
+"""
+OCR Processor – Extracts text and analyzes graphs from screen captures.
+
+Provides functions for:
+  * Text extraction via pytesseract
+  * Image preprocessing and enhancement
+  * Graph detection and analysis integration
+"""
 import cv2
 import numpy as np
 from pathlib import Path
+from typing import Dict
 from .config import TEMP_SCREENSHOT_PATH
 
 try:
@@ -115,4 +123,38 @@ def ocr_debug_save(image_path: Path, processed: np.ndarray):
     debug_path = image_path.with_name("debug_processed.png")
     cv2.imwrite(str(debug_path), processed)
     print(f"[OCR DEBUG] pre‑processed image saved to {debug_path}")
+
+# -------------------------------------------------
+# 5️⃣  Graph Analysis Integration
+# -------------------------------------------------
+def analyze_graphs_in_screenshot(image_path: Path = TEMP_SCREENSHOT_PATH) -> str:
+    """
+    Detect and analyze graphs/charts in a screenshot.
+    Returns a text description of detected graphs and their data.
+    """
+    try:
+        from .graph_analyzer import analyze_graph_in_image
+        
+        graph_data = analyze_graph_in_image(image_path)
+        if graph_data:
+            return graph_data.description
+        return "No graphs detected in screenshot"
+    except Exception as e:
+        print(f"[ERROR] Graph analysis failed: {e}")
+        return ""
+
+def combined_screenshot_analysis(image_path: Path = TEMP_SCREENSHOT_PATH) -> Dict[str, str]:
+    """
+    Perform both text OCR and graph analysis on a screenshot.
+    Returns a dictionary with both types of analysis.
+    """
+    text_output = extract_text_from_image(image_path)
+    graph_output = analyze_graphs_in_screenshot(image_path)
+    
+    return {
+        "text": text_output,
+        "graphs": graph_output,
+        "combined": f"Text content:\n{text_output}\n\nGraph analysis:\n{graph_output}"
+    }
+
 # -------------------------------------------------

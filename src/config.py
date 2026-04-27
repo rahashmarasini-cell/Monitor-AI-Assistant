@@ -34,7 +34,7 @@ Answer:"""
 # -------------------------------------------------
 # Path to a GGML‑quantised model (e.g. Mistral‑7B‑Instruct Q4_0)
 # You can set the env var LOCAL_MODEL_PATH or edit the default below.
-DEFAULT_MODEL_PATH = Path(__file__).parent.parent / "MONITOR-AI-ASSISTANT" / "models" / "mistral-7b-instruct-v0.1.Q4_0.gguf"
+DEFAULT_MODEL_PATH = Path(__file__).parent.parent / "MONITOR-AI-ASSISTANT" / "models" / "mistral-7b-v0.1.Q4_0.gguf"
 LOCAL_MODEL_PATH = Path(os.getenv("LOCAL_MODEL_PATH", DEFAULT_MODEL_PATH))
 
 # Inference parameters – feel free to tweak
