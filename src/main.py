@@ -1,10 +1,9 @@
-# ---- UPDATED FILE: src/main.py ----
 """
-Entry‑point for the Monitor‑AI Assistant.
+Entry-point for the Monitor-AI Assistant.
 
-The program follows the classic producer‑consumer pattern:
-    * a background thread captures the screen, runs OCR, and asks the LLM;
-    * the UI thread (Tkinter) displays the answer on the second monitor.
+Pipeline (tried in order):
+  1. Vision  — screenshot → llava:7b via Ollama, streamed token-by-token (GPU)
+  2. Fallback — screenshot → Tesseract OCR → Mistral local LLM
 """
 
 import threading
@@ -13,78 +12,173 @@ import traceback
 from pathlib import Path
 
 from .screen_capture import capture_screen
-from .ocr_processor import extract_text_from_image
+from .ocr_processor import get_ocr_diagnostics
 from .ai_processor import query_llm
+from .vision_llm import stream_vision, is_ollama_running
 from .answer_window import AnswerWindow
 from .config import CAPTURE_INTERVAL, DATA_DIR, LOCAL_MODEL_PATH
 
-def _worker_loop(stop_event: threading.Event, answer_win: AnswerWindow) -> None:
-    """Background loop – capture → OCR → LLM → update UI."""
+
+# ---------------------------------------------------------------------------
+# Shared analysis helpers
+# ---------------------------------------------------------------------------
+
+def _analyse_fallback(img_path: Path, user_question: str | None = None) -> str:
+    """OCR + local LLM path used when Ollama is not reachable."""
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+        import pytesseract as _pt
+        _img = Image.open(str(img_path)).convert("L")
+        _img = ImageEnhance.Contrast(_img).enhance(2.0)
+        _img = _img.filter(ImageFilter.SHARPEN)
+        raw_text = _pt.image_to_string(_img, config="--psm 6 -l eng").strip()
+        if len(raw_text) < 10:
+            raw_text = _pt.image_to_string(_img, config="--psm 11 -l eng").strip()
+        del _img
+    except Exception as ocr_err:
+        raw_text = ""
+        print(f"[WARN] OCR failed: {ocr_err}")
+
+    if not raw_text or len(raw_text.strip()) < 5:
+        diag = get_ocr_diagnostics()
+        return (
+            "Ollama is not running and OCR found no text.\n\n"
+            "Start Ollama to use vision mode, or check Tesseract for OCR fallback.\n\n"
+            f"--- OCR Diagnostics ---\n{diag}"
+        )
+
+    return query_llm(raw_text, user_question) or "(No answer generated.)"
+
+
+def _run_with_stream(
+    img_path: Path,
+    answer_win: AnswerWindow,
+    user_question: str | None = None,
+) -> None:
+    """
+    Ollama online  → stream tokens live so the answer appears word-by-word.
+    Ollama offline → OCR + local LLM, display when complete.
+    """
+    if is_ollama_running():
+        answer_win.root.after(0, answer_win.start_stream)
+
+        def _on_token(token: str):
+            answer_win.root.after(0, answer_win.append_stream, token)
+
+        stream_vision(img_path, _on_token, user_question)
+    else:
+        answer = _analyse_fallback(img_path, user_question)
+        answer_win.root.after(0, answer_win.show_answer, answer)
+
+
+# ---------------------------------------------------------------------------
+# Background worker (auto-monitor mode)
+# ---------------------------------------------------------------------------
+
+def _worker_loop(
+    stop_event: threading.Event,
+    paused_event: threading.Event,
+    answer_win: AnswerWindow,
+) -> None:
     while not stop_event.is_set():
+        if paused_event.is_set():
+            time.sleep(0.5)
+            continue
+
         try:
-            # 1️⃣ Capture
             img_path: Path = capture_screen()
-
-            # 2️⃣ OCR
-            raw_text: str = extract_text_from_image(img_path)
-
-            if not raw_text or not raw_text.strip():
-                # No legible text – skip this round silently
-                time.sleep(CAPTURE_INTERVAL)
+            if paused_event.is_set():
                 continue
-
-            # Ensure text is meaningful before sending to LLM
-            if len(raw_text.strip()) < 5:
-                print(f"[INFO] OCR text too short ({len(raw_text)} chars), skipping...")
-                time.sleep(CAPTURE_INTERVAL)
-                continue
-
-            print(f"[DEBUG] OCR extracted {len(raw_text)} characters of text")
-
-            # 3️⃣ Ask the local model
-            answer: str = query_llm(raw_text)
-
-            # 4️⃣ Push answer to the UI (must happen on the Tk thread)
-            answer_win.root.after(0, answer_win.show_answer, answer)
-
-        except Exception as exc:
-            print("[ERROR] Exception inside worker loop:")
+            _run_with_stream(img_path, answer_win)
+        except Exception:
+            print("[ERROR] Exception in worker loop:")
             traceback.print_exc()
 
-        # Wait before the next capture cycle.
         time.sleep(CAPTURE_INTERVAL)
 
+
+# Prevents concurrent Ask/Capture calls from racing each other.
+_operation_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# User-triggered operations
+# ---------------------------------------------------------------------------
+
+def _force_capture(
+    answer_win: AnswerWindow,
+    paused_event: threading.Event,
+) -> None:
+    if not _operation_lock.acquire(blocking=False):
+        answer_win.show_answer("Still processing — please wait.")
+        return
+
+    def _run():
+        paused_event.set()
+        answer_win.root.after(0, answer_win.set_paused, True)
+        mode = "Vision/GPU" if is_ollama_running() else "OCR fallback"
+        answer_win.root.after(0, answer_win.show_answer, f"Capturing... [{mode}]")
+        try:
+            img_path = capture_screen()
+            _run_with_stream(img_path, answer_win)
+        except Exception as e:
+            answer_win.root.after(0, answer_win.show_answer, f"[Capture error: {e}]")
+        finally:
+            _operation_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="Force-Capture").start()
+
+
+def _ask_question(
+    question: str,
+    answer_win: AnswerWindow,
+    paused_event: threading.Event,
+) -> None:
+    if not _operation_lock.acquire(blocking=False):
+        answer_win.show_answer("Still processing — please wait.")
+        return
+
+    def _run():
+        paused_event.set()
+        answer_win.root.after(0, answer_win.set_paused, True)
+        try:
+            img_path = capture_screen()
+            _run_with_stream(img_path, answer_win, user_question=question)
+        except Exception as e:
+            answer_win.root.after(0, answer_win.show_answer, f"[Error: {e}]")
+        finally:
+            _operation_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="Ask-Thread").start()
+
+
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    """
-    Initialise the UI, start the background worker, and run the Tkinter
-    main‑loop. When the window is closed we signal the thread to exit cleanly.
-    """
-    # Ensure required directories exist
     DATA_DIR.mkdir(exist_ok=True)
     LOCAL_MODEL_PATH.parent.mkdir(exist_ok=True)
 
-    # UI lives in the *main* thread.
-    answer_win = AnswerWindow()
-
-    # Background worker (daemon → won't block interpreter exit)
     stop_event = threading.Event()
+    paused_event = threading.Event()
+    paused_event.set()  # Start paused — user initiates first capture
+
+    answer_win = AnswerWindow(
+        paused_event=paused_event,
+        on_ask=lambda q: _ask_question(q, answer_win, paused_event),
+        on_capture=lambda: _force_capture(answer_win, paused_event),
+        on_exit=lambda: (stop_event.set(), answer_win.root.destroy()),
+    )
+
     worker = threading.Thread(
         target=_worker_loop,
-        args=(stop_event, answer_win),
+        args=(stop_event, paused_event, answer_win),
         daemon=True,
-        name="Capture‑Worker",
+        name="Capture-Worker",
     )
     worker.start()
-    print("[INFO] Capture worker started – answer window on monitor", answer_win.root.winfo_screen())
 
     try:
-        answer_win.start()               # blocks until the window is closed
+        answer_win.start()
     finally:
-        # Graceful shutdown
         stop_event.set()
         worker.join(timeout=5)
-        print("[INFO] Worker thread stopped. Bye!")
-
-if __name__ == "__main__":
-    main()
-# -------------------------------------------------

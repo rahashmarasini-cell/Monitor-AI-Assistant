@@ -22,7 +22,7 @@ def build_prompt(extracted_text: str) -> str:
     Insert the OCR‑extracted text into the user‑defined prompt template.
     """
     # Truncate very long OCR output – keep within context window.
-    max_len = 3000
+    max_len = 1800  # keeps total prompt safely within 2048-token context window
     if len(extracted_text) > max_len:
         extracted_text = extracted_text[:max_len] + "\n...[truncated]"
 
@@ -49,19 +49,30 @@ def clean_llm_response(raw: str) -> str:
 
 def query_llm(extracted_text: str, user_question: Optional[str] = None) -> str:
     """
-    Build the full prompt, query the local model, and return a cleaned answer.
-    ``user_question`` is optional – the base prompt already says *if there is a
-    question in the OCR text, answer it; otherwise summarise*.
+    Build the full prompt and return a cleaned answer.
+    Uses Mistral [INST] format. When a user_question is provided and the OCR
+    text is thin, the question is answered directly without screen context.
     """
-    prompt = build_prompt(extracted_text)
+    has_context = extracted_text and len(extracted_text.strip()) > 30
 
     if user_question:
-        # Simple prepend – you could incorporate a more elaborate chat format later.
-        prompt = f"User question: {user_question}\n\n{prompt}"
+        if has_context:
+            context = extracted_text.strip()[:1800]
+            prompt = (
+                f"<s>[INST] You are an expert assistant. Use the screen content below as context "
+                f"to answer the user's question. Show your reasoning clearly.\n\n"
+                f"Screen content:\n{context}\n\n"
+                f"Question: {user_question} [/INST]"
+            )
+        else:
+            prompt = (
+                f"<s>[INST] You are an expert assistant. Answer the following question "
+                f"clearly and step by step.\n\nQuestion: {user_question} [/INST]"
+            )
+    else:
+        prompt = build_prompt(extracted_text)
 
-    # Call the global LLM wrapper.
     raw_answer = _llm_instance.generate(prompt)
-
     return clean_llm_response(raw_answer)
 
 

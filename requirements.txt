@@ -1,8 +1,15 @@
-pytesseract
-openai
-numpy
-Pillow
-mss
-screeninfo
-opencv-python
-llama-cpp-python
+# OCR and Image Processing
+pytesseract>=0.3.10        # Python wrapper for Tesseract-OCR
+Pillow>=9.0.0             # Image processing
+opencv-python>=4.5.0      # Computer vision
+
+# Screen Capture
+mss>=6.1.0                # Fast multi-platform screen capture
+screeninfo>=0.8.0         # Monitor information
+
+# AI/ML
+openai>=0.27.0            # OpenAI API (optional, for cloud LLM)
+llama-cpp-python>=0.1.0   # Local LLM inference
+
+# Utilities
+numpy>=1.21.0             # Numerical computing

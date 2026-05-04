@@ -64,17 +64,39 @@ def check_tesseract():
     print("3. Checking Tesseract-OCR Installation")
     print("="*60)
     
+    # First check PATH (legacy check)
     try:
         result = subprocess.run(['tesseract', '--version'], 
                               capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             version_line = result.stdout.split('\n')[0]
-            print(f"✓ Tesseract found: {version_line}")
+            print(f"✓ Tesseract found in PATH: {version_line}")
             return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     
-    print("✗ Tesseract-OCR NOT found in PATH")
+    # Check if pytesseract can find it directly
+    try:
+        import pytesseract
+        from pathlib import Path
+        
+        # Check common installation paths
+        tesseract_paths = [
+            Path("C:/Program Files/Tesseract-OCR/tesseract.exe"),
+            Path("C:/Program Files (x86)/Tesseract-OCR/tesseract.exe"),
+        ]
+        
+        for path in tesseract_paths:
+            if path.exists():
+                print(f"✓ Tesseract found: {path}")
+                print("  (pytesseract configured to use this path)")
+                return True
+    except:
+        pass
+    
+    print("⚠ Tesseract-OCR not found in system PATH")
+    print("  However, pytesseract may still work with direct path configuration")
+    print("\n  To add to PATH:")
     print("  Windows: choco install tesseract")
     print("  Linux:   apt-get install tesseract-ocr")
     print("  macOS:   brew install tesseract")

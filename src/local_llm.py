@@ -1,18 +1,17 @@
-# ---- NEW FILE: src/local_llm.py ----
 """
 Local LLM driver using llama-cpp-python.
 
-The driver loads the GGML model once (on first use) and exposes a simple
-``generate(prompt: str) -> str`` method that returns the model’s completion.
+The model runs in an isolated subprocess so that a C-level crash inside
+llama_cpp (OOM, access violation) kills only the worker process — the UI
+stays alive and shows an error message instead of disappearing.
 
-It is deliberately lightweight – only the parameters we need for
-the Monitor‑AI assistant are exposed via ``src/config.py``.
+The subprocess is spawned once at startup, loads the model, then handles
+queries from a queue indefinitely.
 """
 
-import os
+import multiprocessing
 import platform
 from pathlib import Path
-from typing import Optional
 
 from .config import (
     LOCAL_MODEL_PATH,
@@ -21,79 +20,106 @@ from .config import (
     LOCAL_TEMPERATURE,
 )
 
+# ---------------------------------------------------------------------------
+# Worker function — runs in the child process.
+# Must be at module level so multiprocessing can pickle it on Windows.
+# ---------------------------------------------------------------------------
+
+def _llm_worker(model_path: str, n_ctx: int, n_batch: int, temperature: float,
+                in_q: multiprocessing.Queue, out_q: multiprocessing.Queue) -> None:
+    """
+    Loads the GGUF model once, then loops reading prompts from in_q and
+    writing completions to out_q.  Sentinel None in in_q signals shutdown.
+    """
+    try:
+        from llama_cpp import Llama
+        model = Llama(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_batch=n_batch,
+            n_gpu_layers=0,
+            verbose=False,
+        )
+    except Exception as e:
+        out_q.put(f"__ERROR__:{e}")
+        return
+
+    out_q.put("__READY__")
+
+    while True:
+        item = in_q.get()
+        if item is None:
+            break
+        prompt, max_tokens = item
+        try:
+            result = model(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=1.0,
+                repeat_penalty=1.1,
+                stop=["[INST]", "</s>"],
+            )
+            text = result["choices"][0]["text"].strip()
+            out_q.put(text)
+        except Exception as e:
+            out_q.put(f"[LLM error: {e}]")
+
+
+# ---------------------------------------------------------------------------
+# Public class
+# ---------------------------------------------------------------------------
+
 class LocalLLM:
-    """Thin wrapper around llama_cpp.Llama that hides the library specifics."""
+    """Spawns a worker subprocess that owns the model. Crash-safe for the UI."""
+
     def __init__(self) -> None:
-        # -----------------------------------------------------------------
-        # Basic sanity checks – we only support Windows in this repo (as requested)
-        # -----------------------------------------------------------------
         if platform.system() != "Windows":
-            raise RuntimeError("Local LLM wrapper is currently targeted at Windows only.")
+            raise RuntimeError("LocalLLM is currently Windows-only.")
 
         if not LOCAL_MODEL_PATH.exists():
             raise FileNotFoundError(
                 f"Model file not found at {LOCAL_MODEL_PATH}. "
-                "Please download the model and place it in the correct directory."
+                "Place the GGUF model file in the correct directory."
             )
 
-        model_path = Path(LOCAL_MODEL_PATH).expanduser().resolve()
+        self._in_q: multiprocessing.Queue = multiprocessing.Queue()
+        self._out_q: multiprocessing.Queue = multiprocessing.Queue()
+
+        self._proc = multiprocessing.Process(
+            target=_llm_worker,
+            args=(
+                str(LOCAL_MODEL_PATH),
+                LOCAL_N_CTX,
+                LOCAL_N_BATCH,
+                LOCAL_TEMPERATURE,
+                self._in_q,
+                self._out_q,
+            ),
+            daemon=True,
+            name="LLM-Worker",
+        )
+        self._proc.start()
+
+        # Block until the model signals it is ready (or errors out).
+        try:
+            msg = self._out_q.get(timeout=120)
+        except Exception:
+            self._proc.kill()
+            raise RuntimeError("LLM worker did not become ready within 2 minutes.")
+
+        if isinstance(msg, str) and msg.startswith("__ERROR__"):
+            self._proc.kill()
+            raise RuntimeError(f"LLM worker failed to load model: {msg[9:]}")
+
+    # ------------------------------------------------------------------
+    def generate(self, prompt: str, max_tokens: int = 350) -> str:
+        if not self._proc.is_alive():
+            return "[LLM process is no longer running — please restart the application.]"
+
+        self._in_q.put((prompt, max_tokens))
 
         try:
-            # Import is inside the try so that the error message is clearer for users.
-            from llama_cpp import Llama
-        except Exception as exc:
-            raise ImportError(
-                "Failed to import llama_cpp. Make sure 'llama-cpp-python' is installed. "
-                "On Windows you need the compiled wheel (pip install llama-cpp-python)."
-            ) from exc
-
-        # -------------------------------------------------------------
-        # Model initialisation – we keep it simple: CPU‑only for maximum compatibility.
-        # You can experiment with n_gpu_layers>0 if you built a DirectML wheel.
-        # -------------------------------------------------------------
-        self._model = Llama(
-            model_path=str(model_path),
-            n_ctx=LOCAL_N_CTX,
-            n_batch=LOCAL_N_BATCH,
-            n_gpu_layers=0,               # 0 = CPU only; change if you have a GPU build.
-            verbose=False,
-        )
-
-    # -----------------------------------------------------------------
-    # Public API
-    # -----------------------------------------------------------------
-    def generate(self, prompt: str, max_tokens: int = 512) -> str:
-        """
-        Run the model on *prompt* and return the generated text.
-
-        Parameters
-        ----------
-        prompt: str
-            Full prompt (including any system instructions) – already formatted.
-        max_tokens: int, optional
-            Upper bound on the number of tokens the model may emit.
-
-        Returns
-        -------
-        str
-            The model’s completion with leading/trailing whitespace stripped.
-        """
-        # ``self._model`` returns a dict with a ``choices`` list.
-        # Example: {"choices": [{"text": " answer"}], "usage": {...}}
-        output = self._model(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=LOCAL_TEMPERATURE,
-            # The following arguments are optional but keep defaults for simplicity.
-            top_p=1.0,
-            repeat_penalty=1.0,
-            stop=None,
-        )
-        # Guard against unexpected shape – raise a clear error if needed.
-        try:
-            text = output["choices"][0]["text"]
-        except Exception as exc:
-            raise RuntimeError(f"Unexpected LLM output format: {output}") from exc
-
-        return text.strip()
-# -------------------------------------------------
+            return self._out_q.get(timeout=180)
+        except Exception:
+            return "[LLM timed out — the query took longer than 3 minutes.]"

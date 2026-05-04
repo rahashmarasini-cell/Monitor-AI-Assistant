@@ -3,7 +3,7 @@
 
 param(
     [switch]$clean = $false,
-    [switch]$one_file = $true,
+    [switch]$one_file,
     [switch]$sign = $false,
     [string]$version = "1.0.0",
     [switch]$debug = $false
@@ -34,9 +34,10 @@ try {
 }
 
 # Verify model file exists
-if (-not (Test-Path "models/mistral-7b-instruct.Q4_0.ggmlv3.bin")) {
-    Write-Error-Custom "Model file not found at models/mistral-7b-instruct.Q4_0.ggmlv3.bin"
-    Write-Info "Please download the model first"
+$modelSrc = "MONITOR-AI-ASSISTANT"
+if (-not (Test-Path "$modelSrc/models/mistral-7b-v0.1.Q4_0.gguf")) {
+    Write-Error-Custom "Model file not found at $modelSrc/models/mistral-7b-v0.1.Q4_0.gguf"
+    Write-Info "Please place the model file there before building"
     exit 1
 }
 Write-Success "Model file verified"
