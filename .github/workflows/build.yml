@@ -37,7 +37,7 @@ jobs:
     
     - name: Verify model file
       run: |
-        if (-not (Test-Path "models/mistral-7b-instruct.Q4_0.ggmlv3.bin")) {
+        if (-not (Test-Path "MONITOR-AI-ASSISTANT/models/mistral-7b-v0.1.Q4_0.gguf")) {
           Write-Error "Model file not found"
           exit 1
         }
