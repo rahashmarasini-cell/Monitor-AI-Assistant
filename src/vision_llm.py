@@ -21,9 +21,9 @@ from typing import Callable, Optional
 
 OLLAMA_URL = "http://localhost:11434"
 VISION_MODEL  = "llava-llama3"   # reads the image only
-MATH_MODEL    = "deepseek-r1:7b" # solves the extracted problem
+MATH_MODEL    = "qwen2.5:7b"     # solves the extracted problem (strong math, no CoT)
 _FALLBACK_VISION = "llava:7b"
-TIMEOUT = 360  # deepseek-r1 chain-of-thought on CPU can take 3-4 minutes
+TIMEOUT = 180  # GPU inference; covers model swap + reasoning + answer
 
 _OLLAMA_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
 
@@ -34,13 +34,30 @@ _EXTRACT_SYSTEM = (
 )
 
 _SOLVE_SYSTEM = (
-    "You are a math tutor. Solve the multiple-choice problem step by step. "
-    "Show all working. Apply these rules without exception:\n"
-    "• i² = -1\n"
-    "• Powers of i cycle every 4: i¹=i, i²=-1, i³=-i, i⁴=1\n"
-    "• FOIL: (A+Bi)(C+Di) = A·C + A·Di + Bi·C + Bi·Di = (AC-BD)+(AD+BC)i\n"
-    "• Preserve every negative sign inside parentheses\n"
-    "End your response with: Answer: X.) [value]"
+    "You are a precise math tutor. Solve the multiple-choice problem in as few steps as possible.\n"
+    "Be DIRECT — do not wander. Pick the right method on the first try.\n"
+    "\n"
+    "QUADRATIC VERTEX (y = ax² + bx + c):\n"
+    "  Use ONLY the formula h = -b/(2a), k = a·h² + b·h + c.\n"
+    "  Read a, b, c straight from the original equation. Do not divide or factor first.\n"
+    "  Direction: a > 0 opens upward, a < 0 opens downward.\n"
+    "  Example: y = 3x² - 18x - 10  →  a=3, b=-18, c=-10\n"
+    "    h = -(-18)/(2·3) = 18/6 = 3\n"
+    "    k = 3(3²) + (-18)(3) + (-10) = 27 - 54 - 10 = -37\n"
+    "    Vertex (3,-37), opens upward.\n"
+    "\n"
+    "COMPLEX NUMBER PRODUCT (a+bi)(c+di):\n"
+    "  Expand all four FOIL terms, then substitute i² = -1.\n"
+    "  Result: (ac - bd) + (ad + bc)i\n"
+    "\n"
+    "COMPLEX NUMBER SUM/DIFFERENCE:\n"
+    "  Add real parts and imaginary parts separately. Keep all signs.\n"
+    "\n"
+    "POWERS OF i:\n"
+    "  i² = -1, i³ = -i, i⁴ = 1, then cycle. For i^n, compute n mod 4.\n"
+    "\n"
+    "End every response with a final line: Answer: X.) [value]\n"
+    "Your final answer MUST exactly match one of the listed choices a/b/c/d."
 )
 
 
@@ -131,7 +148,13 @@ def _fix_math_ocr(text: str) -> str:
     text = re.sub(r'(?<=[+\-*(,\s(])S(?=[i\d])', '5', text)
     text = re.sub(r'(?<=[+\-*(,\s(])Z(?=[i\d])', '2', text)
     # Trailing ) or / after digit at end of line → i  (italic i misread)
-    text = re.sub(r'(\d)[)/](\s*)$', r'\1i\2', text, flags=re.MULTILINE)
+    # BUT only when the line is a math expression — NOT a coordinate tuple
+    # like "(3,-37)". Coordinate tuples contain commas; math expressions don't.
+    def _fix_trailing(line: str) -> str:
+        if ',' in line:
+            return line
+        return re.sub(r'(\d)[)/](\s*)$', r'\1i\2', line)
+    text = '\n'.join(_fix_trailing(l) for l in text.splitlines())
     # Isolated | or ! between operators → i
     text = re.sub(r'(?<=\d)[|!](?=\s*[+\-)])', 'i', text)
     # i2 at end of term → i²
@@ -176,11 +199,17 @@ def _extract_question(image_path: Path, ocr_hint: str) -> str:
     Sets keep_alive=0 so VRAM is freed immediately for the math model.
     """
     prompt = (
-        "Read this exam screenshot carefully.\n"
-        "Output EXACTLY:\n"
-        "- The question text (word for word)\n"
-        "- Each answer choice labeled a/b/c/d (word for word)\n"
-        "Do NOT solve. Do NOT add commentary."
+        "Transcribe this exam screenshot exactly. Output:\n"
+        "- The question text (verbatim, including ALL math symbols)\n"
+        "- Each answer choice labeled a/b/c/d (verbatim)\n"
+        "\n"
+        "Critical: preserve every character precisely:\n"
+        "  • superscripts (²,³): write as x^2, x^3 (NEVER as x?, x2 alone, or drop them)\n"
+        "  • signs: every + and - must match the image exactly\n"
+        "  • the symbol i in complex numbers (NOT capital I, NOT 1)\n"
+        "  • parentheses and their contents word-for-word\n"
+        "\n"
+        "Do NOT solve. Do NOT explain. Output only the transcription."
     )
     if ocr_hint:
         prompt += f"\n\nOCR reading (may have character errors — verify against image):\n{ocr_hint}"
@@ -217,17 +246,37 @@ def _stream_math_solve(
     extracted_question: str,
     on_token: Callable[[str], None],
     user_question: Optional[str] = None,
+    ocr_text: str = "",
 ) -> None:
-    """Stream the solution from deepseek-r1 token by token."""
+    """Stream the solution from the math model token by token."""
+    sources_block = (
+        f"--- VISION READING ---\n{extracted_question}\n"
+        f"--- OCR READING ---\n{ocr_text}\n--- END ---"
+        if ocr_text else extracted_question
+    )
+
     if user_question:
         prompt = (
             f"User question: {user_question}\n\n"
-            f"Exam content:\n{extracted_question}"
+            f"Exam content (two sources of the same screenshot — cross-check them):\n"
+            f"{sources_block}"
         )
     else:
         prompt = (
-            f"Solve this exam problem step by step:\n\n{extracted_question}\n\n"
-            "Show all working. State the correct answer choice at the end."
+            f"Solve this exam problem.\n\n"
+            f"Two sources transcribe the same screenshot — cross-check character-by-character "
+            f"when they disagree (especially superscripts ², signs +/-, the symbol i, "
+            f"and stacked fractions which OCR may flatten into two adjacent numbers):\n\n"
+            f"{sources_block}\n\n"
+            f"Process:\n"
+            f"  1. Solve the problem and write your computed answer in canonical form.\n"
+            f"  2. Compare your answer to EACH choice. Watch for: ² vs ?, +k vs -k, "
+            f"(x-h) vs (x+h), and stacked fractions like a/b rendered as 'a b' in OCR.\n"
+            f"  3. Pick the choice whose meaning matches your computed answer.\n"
+            f"  4. Final line MUST be: 'Answer: X.) <your own canonical form>' "
+            f"— write YOUR computed value, not a copy from the (possibly garbled) choice text.\n"
+            f"\n"
+            f"Use plain ASCII math (e.g. 6/13, x^2, -17/13 i). Do NOT use LaTeX \\(...\\) or \\[...\\]."
         )
 
     payload = json.dumps({
@@ -236,7 +285,14 @@ def _stream_math_solve(
         "prompt": prompt,
         "stream": True,
         "keep_alive": -1,
-        "options": {"num_gpu": 0, "temperature": 0.2, "num_predict": 1200},
+        # 8GB VRAM constraint: full GPU offload spills to shared memory (10x slower).
+        # 28 layers + 4096 ctx fits comfortably under 7GB total.
+        "options": {
+            "num_gpu": 28,
+            "num_ctx": 4096,
+            "temperature": 0.2,
+            "num_predict": 800,
+        },
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -246,44 +302,42 @@ def _stream_math_solve(
         method="POST",
     )
     try:
-        in_think = False
-        think_shown = False
-        buf = ""
+        # Ollama splits deepseek-r1 output into two streams:
+        #   chunk["thinking"] — chain-of-thought (long, internal)
+        #   chunk["response"] — the final answer (what the user wants)
+        # We show a single "[Reasoning...]" line + dots while thinking arrives,
+        # then stream the real response token-by-token.
+        thinking_announced = False
+        thinking_chars = 0
+        response_started = False
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             for raw_line in resp:
                 raw_line = raw_line.strip()
                 if not raw_line:
                     continue
                 chunk = json.loads(raw_line)
-                token = chunk.get("response", "")
-                if token:
-                    buf += token
-                    # Suppress <think>...</think> chain-of-thought — show one status line
-                    while True:
-                        if not in_think:
-                            start = buf.find("<think>")
-                            if start == -1:
-                                on_token(buf)
-                                buf = ""
-                                break
-                            # emit text before <think>
-                            if start > 0:
-                                on_token(buf[:start])
-                            buf = buf[start + len("<think>"):]
-                            in_think = True
-                            if not think_shown:
-                                on_token("[Reasoning...]\n")
-                                think_shown = True
-                        else:
-                            end = buf.find("</think>")
-                            if end == -1:
-                                buf = ""  # discard thinking tokens
-                                break
-                            buf = buf[end + len("</think>"):]
-                            in_think = False
+                think_tok = chunk.get("thinking", "") or ""
+                resp_tok  = chunk.get("response", "") or ""
+
+                if think_tok and not response_started:
+                    if not thinking_announced:
+                        on_token("[Reasoning")
+                        thinking_announced = True
+                    thinking_chars += len(think_tok)
+                    # one dot every ~80 thinking chars as a heartbeat
+                    while thinking_chars >= 80:
+                        on_token(".")
+                        thinking_chars -= 80
+
+                if resp_tok:
+                    if thinking_announced and not response_started:
+                        on_token("]\n\n")
+                    response_started = True
+                    on_token(resp_tok)
+
                 if chunk.get("done", False):
-                    if buf:
-                        on_token(buf)
+                    if thinking_announced and not response_started:
+                        on_token("]\n\n[No answer produced — model exhausted token budget on reasoning. Try again.]")
                     break
     except urllib.error.URLError as e:
         on_token(f"\n[Connection error: {e.reason}]")
@@ -316,8 +370,10 @@ def stream_vision(
         on_token(f"[deepseek-r1 not found — vision-only mode]\n\n{extracted}")
         return
 
-    on_token("[Solving...]\n\n")
-    _stream_math_solve(extracted, on_token, user_question)
+    # Brief pause to let Ollama finish unloading the vision model (frees VRAM)
+    time.sleep(1.5)
+    on_token("[Solving on GPU...]\n\n")
+    _stream_math_solve(extracted, on_token, user_question, ocr_hint)
 
 
 def ask_vision(image_path: Path, user_question: Optional[str] = None) -> str:
