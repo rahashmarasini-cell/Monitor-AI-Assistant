@@ -2,6 +2,8 @@
 models/*.bin
 models/*.gguf
 models/*.ggmlv3
+MONITOR-AI-ASSISTANT/models/*.gguf
+MONITOR-AI-ASSISTANT/models/*.bin
 
 # Python
 __pycache__/
